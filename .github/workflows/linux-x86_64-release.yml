@@ -1,0 +1,148 @@
+name: Linux x86_64 release
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-x86_64-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Keep this in sync with ci/x86_64-linux-release.sh (LLVM 22).
+      DEVKIT_VERSION: 0.17.0-dev.203+073889523
+      DEVKIT_SHA256: a88f904d5a7d60348bcd1189792ccb201ca80c49fd2497c3215381413fe330af
+      TARGET: x86_64-linux-musl
+
+    steps:
+      - name: Check out source and version history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare runner
+        run: |
+          # Bootstrap needs more memory than smaller hosted runners provide.
+          # Remove unused hosted toolchains to make room for swap and build caches.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          sudo fallocate -l 16G /swapfile-zig
+          sudo chmod 600 /swapfile-zig
+          sudo mkswap /swapfile-zig
+          sudo swapon /swapfile-zig
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build xz-utils
+          echo "ZIG_GLOBAL_CACHE_DIR=$RUNNER_TEMP/zig-global-cache" >> "$GITHUB_ENV"
+          echo "ZIG_LOCAL_CACHE_DIR=$RUNNER_TEMP/zig-local-cache" >> "$GITHUB_ENV"
+
+      - name: Download pinned bootstrap toolchain
+        run: |
+          archive="$RUNNER_TEMP/zig-devkit.tar.xz"
+          prefix="$RUNNER_TEMP/zig-devkit"
+          curl --fail --location --retry 3 \
+            "https://ziglang.org/deps/zig+llvm+lld+clang-${TARGET}-${DEVKIT_VERSION}.tar.xz" \
+            --output "$archive"
+          echo "$DEVKIT_SHA256  $archive" | sha256sum --check --strict
+          mkdir -p "$prefix"
+          tar -xJf "$archive" -C "$prefix" --strip-components=1
+          rm "$archive"
+          echo "DEVKIT_PREFIX=$prefix" >> "$GITHUB_ENV"
+
+      - name: Build release compiler
+        run: |
+          # zig cc must use the bootstrap toolchain's own lib directory.
+          unset ZIG_LIB_DIR
+          cmake -S . -B build-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$DEVKIT_PREFIX" \
+            -DCMAKE_C_COMPILER="$DEVKIT_PREFIX/bin/zig;cc;-target;$TARGET;-mcpu=baseline" \
+            -DCMAKE_CXX_COMPILER="$DEVKIT_PREFIX/bin/zig;c++;-target;$TARGET;-mcpu=baseline" \
+            -DZIG_TARGET_TRIPLE="$TARGET" \
+            -DZIG_TARGET_MCPU=baseline \
+            -DZIG_STATIC=ON \
+            -DZIG_NO_LIB=ON \
+            -DZIG_EXTRA_BUILD_ARGS="-j2;--maxrss;17179869184"
+          cmake --build build-release --target stage3 --parallel 2
+
+      - name: Build portable distribution
+        id: distribution
+        run: |
+          export ZIG_LIB_DIR="$GITHUB_WORKSPACE/lib"
+          zig="$GITHUB_WORKSPACE/build-release/stage3/bin/zig"
+          version="$("$zig" version)"
+          name="zig-x86_64-linux-$version"
+          prefix="$GITHUB_WORKSPACE/build-release/dist/$name"
+          # CMake already built the static ReleaseFast compiler. Use Zig's
+          # installer to populate the upstream layout without rebuilding it.
+          "$zig" build install -j2 \
+            --maxrss 17179869184 \
+            --prefix "$prefix" \
+            -Dlib-files-only \
+            -Dflat
+          cp "$zig" "$prefix/zig"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Archive and verify relocated distribution
+        env:
+          DIST_NAME: ${{ steps.distribution.outputs.name }}
+        run: |
+          mkdir -p build-release/artifacts
+          tar -cJf "build-release/artifacts/$DIST_NAME.tar.xz" \
+            -C build-release/dist "$DIST_NAME"
+          cd build-release/artifacts
+          sha256sum "$DIST_NAME.tar.xz" > "$DIST_NAME.tar.xz.sha256"
+          sha256sum --check "$DIST_NAME.tar.xz.sha256"
+          cd "$GITHUB_WORKSPACE"
+
+          # Verify the actual archive away from the checkout, using its bundled lib/.
+          unset ZIG_LIB_DIR
+          relocated="$RUNNER_TEMP/zig-distribution-test"
+          mkdir -p "$relocated"
+          tar -xJf "build-release/artifacts/$DIST_NAME.tar.xz" -C "$relocated"
+          zig="$relocated/$DIST_NAME/zig"
+          "$zig" version
+          test -f "$relocated/$DIST_NAME/lib/std/std.zig"
+          test -f "$relocated/$DIST_NAME/doc/langref.html"
+          test -f "$relocated/$DIST_NAME/LICENSE"
+          test -f "$relocated/$DIST_NAME/README.md"
+          # The compiler must have no host libc, loader, or shared LLVM dependency.
+          if readelf -l "$zig" | grep -q INTERP; then
+            echo 'Unexpected dynamic interpreter in release compiler' >&2
+            exit 1
+          fi
+          if readelf -d "$zig" | grep -q NEEDED; then
+            echo 'Unexpected shared library dependency in release compiler' >&2
+            exit 1
+          fi
+          cd "$relocated"
+          printf 'int main(void) { return 0; }\n' > smoke.c
+          "$zig" cc -target "$TARGET" -mcpu=baseline smoke.c -o smoke
+          ./smoke
+          # Force LLVM to verify that the shipped compiler includes its backend.
+          printf 'pub fn main() void {}\n' > smoke.zig
+          "$zig" build-exe smoke.zig -target "$TARGET" -mcpu=baseline \
+            -O ReleaseFast -fllvm -femit-bin=smoke-zig
+          ./smoke-zig
+          cd "$GITHUB_WORKSPACE/test/standalone/shared_libcpp"
+          "$zig" build test -j2 --summary all
+
+      - name: Upload distribution and checksum
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.distribution.outputs.name }}
+          path: |
+            build-release/artifacts/*.tar.xz
+            build-release/artifacts/*.sha256
+          if-no-files-found: error
+          compression-level: 0
