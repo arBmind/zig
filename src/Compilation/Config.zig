@@ -8,6 +8,10 @@ output_mode: std.lang.OutputMode,
 link_mode: std.lang.LinkMode,
 link_libc: bool,
 link_libcpp: bool,
+/// Link a user-provided shared libc++ rather than the bundled static runtime.
+shared_libcpp: bool,
+/// Export the complete bundled libc++, libc++abi, and libunwind into this DSO.
+build_shared_libcpp: bool,
 link_libunwind: bool,
 /// True if and only if the c_source_files field will have nonzero length when
 /// calling Compilation.create.
@@ -99,6 +103,8 @@ pub const Options = struct {
     emit_llvm_bc: bool = false,
     link_libc: ?bool = null,
     link_libcpp: ?bool = null,
+    shared_libcpp: bool = false,
+    build_shared_libcpp: bool = false,
     link_libunwind: ?bool = null,
     use_llvm: ?bool = null,
     use_lib_llvm: ?bool = null,
@@ -120,6 +126,10 @@ pub const Options = struct {
 };
 
 pub const ResolveError = error{
+    SharedLibCppUnsupportedTarget,
+    SharedLibCppRequiresDynamicLinking,
+    BuildSharedLibCppRequiresDynamicLibrary,
+    BuildSharedLibCppConflictsWithSharedLibCpp,
     WasiExecModelRequiresWasi,
     SharedMemoryIsWasmOnly,
     ObjectFilesCannotShareMemory,
@@ -223,6 +233,19 @@ pub fn resolve(options: Options) ResolveError!Config {
         break :b false;
     };
 
+    if (options.shared_libcpp or options.build_shared_libcpp) {
+        // Other object formats need their own export/import and runtime packaging policy.
+        if (target.os.tag != .linux or target.ofmt != .elf or
+            !(target.abi.isGnu() or target.abi.isMusl()))
+            return error.SharedLibCppUnsupportedTarget;
+    }
+    if (options.build_shared_libcpp) {
+        if (!build_options.have_llvm) return error.LlvmLibraryUnavailable;
+        if (options.shared_libcpp) return error.BuildSharedLibCppConflictsWithSharedLibCpp;
+        if (options.output_mode != .Lib or options.link_mode != .dynamic or !link_libcpp)
+            return error.BuildSharedLibCppRequiresDynamicLibrary;
+    }
+
     const link_libc = b: {
         if (link_libcpp) {
             if (options.link_libc == false) return error.LibCppRequiresLibC;
@@ -285,6 +308,9 @@ pub fn resolve(options: Options) ResolveError!Config {
         // Static is generally a better default. Fight me.
         break :b .static;
     };
+
+    if (options.shared_libcpp and link_libcpp and options.output_mode == .Exe and link_mode == .static)
+        return error.SharedLibCppRequiresDynamicLinking;
 
     const link_libunwind = b: {
         if (options.output_mode == .Exe and link_libc and target_util.libCNeedsLibUnwind(target, link_mode)) {
@@ -552,6 +578,8 @@ pub fn resolve(options: Options) ResolveError!Config {
         .link_mode = link_mode,
         .link_libc = link_libc,
         .link_libcpp = link_libcpp,
+        .shared_libcpp = options.shared_libcpp,
+        .build_shared_libcpp = options.build_shared_libcpp,
         .link_libunwind = link_libunwind,
         .any_unwind_tables = options.any_unwind_tables,
         .any_c_source_files = options.any_c_source_files,

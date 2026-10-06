@@ -15,6 +15,7 @@
         .test_runner_module_imports = .{
             .path = "test_runner_module_imports",
         },
+        .shared_libcpp = .{ .path = "shared_libcpp" },
         .shared_library = .{
             .path = "shared_library",
         },

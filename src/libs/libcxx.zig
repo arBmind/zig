@@ -294,7 +294,7 @@ pub fn buildLibCxx(comp: *Compilation, prog_node: std.Progress.Node) BuildError!
     assert(comp.libcxx_static_lib == null);
     const crt_file = try sub_compilation.toCrtFile();
     comp.libcxx_static_lib = crt_file;
-    try comp.queuePrelinkTaskMode(crt_file.full_object_path, false, &config);
+    try comp.queuePrelinkTaskMode(crt_file.full_object_path, comp.config.build_shared_libcpp, &config);
 }
 
 pub fn buildLibCxxAbi(comp: *Compilation, prog_node: std.Progress.Node) BuildError!void {
@@ -490,7 +490,7 @@ pub fn buildLibCxxAbi(comp: *Compilation, prog_node: std.Progress.Node) BuildErr
     assert(comp.libcxxabi_static_lib == null);
     const crt_file = try sub_compilation.toCrtFile();
     comp.libcxxabi_static_lib = crt_file;
-    try comp.queuePrelinkTaskMode(crt_file.full_object_path, false, &config);
+    try comp.queuePrelinkTaskMode(crt_file.full_object_path, comp.config.build_shared_libcpp, &config);
 }
 
 pub fn addCxxArgs(
@@ -516,8 +516,12 @@ pub fn addCxxArgs(
     try cflags.append(try std.fmt.allocPrint(arena, "-D_LIBCPP_HAS_MUSL_LIBC={d}", .{
         @as(u1, if (target.abi.isMusl()) 1 else 0),
     }));
-    try cflags.append("-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS");
-    try cflags.append("-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS");
+    // Shared runtimes and their consumers must agree on exported RTTI and APIs.
+    // In particular, exception matching in libc++abi relies on canonical typeinfo.
+    if (!comp.config.shared_libcpp and !comp.config.build_shared_libcpp) {
+        try cflags.append("-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS");
+        try cflags.append("-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS");
+    }
     try cflags.append("-D_LIBCPP_HAS_VENDOR_AVAILABILITY_ANNOTATIONS=0");
     try cflags.append(try std.fmt.allocPrint(arena, "-D_LIBCPP_HAS_FILESYSTEM={d}", .{
         @as(u1, if (target.os.tag == .wasi) 0 else 1),

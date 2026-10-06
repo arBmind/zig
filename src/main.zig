@@ -686,6 +686,9 @@ const compile_usage =
     \\  -fentry=[name]                 Override the entry point symbol name
     \\  -fno-entry                     Do not output any entry point
     \\  --force_undefined [name]       Specify the symbol must be defined for the link to succeed
+    \\  -fshared-libcpp                Link a user-provided shared libc++ (Linux ELF)
+    \\  -fno-shared-libcpp             Link the bundled static libc++ (default)
+    \\  -fbuild-shared-libcpp          Export bundled libc++, libc++abi, and libunwind in a shared library
     \\  -fsoname[=name]                Override the default SONAME value
     \\  -fno-soname                    Disable emitting a SONAME
     \\  -flld                          Force using LLD as the linker
@@ -1622,6 +1625,12 @@ fn buildOutputType(
                         soname = .yes_default_value;
                     } else if (mem.cutPrefix(u8, arg, "-fsoname=")) |rest| {
                         soname = .{ .yes = rest };
+                    } else if (mem.eql(u8, arg, "-fshared-libcpp")) {
+                        create_module.opts.shared_libcpp = true;
+                    } else if (mem.eql(u8, arg, "-fno-shared-libcpp")) {
+                        create_module.opts.shared_libcpp = false;
+                    } else if (mem.eql(u8, arg, "-fbuild-shared-libcpp")) {
+                        create_module.opts.build_shared_libcpp = true;
                     } else if (mem.eql(u8, arg, "-fno-soname")) {
                         soname = .no;
                     } else if (mem.eql(u8, arg, "-femit-bin")) {
@@ -2217,6 +2226,8 @@ fn buildOutputType(
                         want_ubsan_rt = false;
                     },
                     .nostdlib_cpp => create_module.opts.ensure_libcpp_on_non_freestanding = false,
+                    .shared_libcpp => create_module.opts.shared_libcpp = true,
+                    .static_libcpp => create_module.opts.shared_libcpp = false,
                     .shared => {
                         create_module.opts.link_mode = .dynamic;
                         is_shared_lib = true;
@@ -4179,6 +4190,26 @@ fn createModule(
             },
         }; // After this point, unresolved_link_inputs is used instead of cli_link_inputs.
 
+        if (create_module.opts.shared_libcpp and
+            (create_module.opts.link_libcpp == true or
+                (create_module.opts.ensure_libcpp_on_non_freestanding and target.os.tag != .freestanding)) and
+            (create_module.opts.output_mode == .Exe or
+                (create_module.opts.output_mode == .Lib and create_module.opts.link_mode == .dynamic)))
+        {
+            // Use normal library resolution for an explicitly built runtime. Never
+            // silently fall back to an archive when shared libc++ was requested.
+            try unresolved_link_inputs.append(gpa, .{ .name_query = .{
+                .name = "c++",
+                .query = .{
+                    .preferred_mode = .dynamic,
+                    .search_strategy = .no_fallback,
+                    .allow_so_scripts = false,
+                },
+                .name_done = false,
+            } });
+            any_named_library_queries = true;
+        }
+
         if (any_named_library_queries) create_module.want_native_include_dirs = true;
 
         // Resolve the library path arguments with respect to sysroot.
@@ -4302,6 +4333,10 @@ fn createModule(
         };
 
         create_module.resolved_options = Compilation.Config.resolve(create_module.opts) catch |err| switch (err) {
+            error.SharedLibCppUnsupportedTarget => fatal("shared libc++ currently supports Linux ELF GNU and musl targets only", .{}),
+            error.SharedLibCppRequiresDynamicLinking => fatal("shared libc++ requires dynamic linking", .{}),
+            error.BuildSharedLibCppRequiresDynamicLibrary => fatal("-fbuild-shared-libcpp requires build-lib -dynamic -lc++", .{}),
+            error.BuildSharedLibCppConflictsWithSharedLibCpp => fatal("cannot build and consume shared libc++ in the same compilation", .{}),
             error.WasiExecModelRequiresWasi => fatal("only WASI OS targets support execution model", .{}),
             error.SharedMemoryIsWasmOnly => fatal("only WebAssembly CPU targets support shared memory", .{}),
             error.ObjectFilesCannotShareMemory => fatal("object files cannot share memory", .{}),

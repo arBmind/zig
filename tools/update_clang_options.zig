@@ -153,6 +153,10 @@ const known_options = [_]KnownOpt{
         .ident = "nostdlibinc",
     },
     .{
+        .name = "static-libstdc++",
+        .ident = "static_libcpp",
+    },
+    .{
         .name = "shared",
         .ident = "shared",
     },
@@ -786,6 +790,15 @@ pub fn main(init: std.process.Init) !void {
                 element.ze = .m;
             }
         }
+        try top.field(element, .{ .emit_default_optional_fields = false });
+    }
+
+    // Zig-specific runtime linkage switches are not present in Clang's Options.td.
+    for ([_]ClangCliParam{
+        .{ .name = "shared-libstdc++", .ze = .shared_libcpp },
+        .{ .name = "fshared-libcpp", .ze = .shared_libcpp },
+        .{ .name = "fno-shared-libcpp", .ze = .static_libcpp },
+    }) |element| {
         try top.field(element, .{ .emit_default_optional_fields = false });
     }
 

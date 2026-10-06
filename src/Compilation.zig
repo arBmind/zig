@@ -1759,7 +1759,7 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
         };
         const any_fuzz = options.config.any_fuzz or options.root_mod.fuzz;
 
-        const link_eh_frame_hdr = options.link_eh_frame_hdr or any_unwind_tables;
+        const link_eh_frame_hdr = options.link_eh_frame_hdr or any_unwind_tables or options.config.build_shared_libcpp;
         const build_id = options.build_id orelse .none;
 
         const link_libc = options.config.link_libc;
@@ -2002,6 +2002,8 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
         cache.hash.add(options.data_sections);
         cache.hash.add(link_libc);
         cache.hash.add(options.config.link_libcpp);
+        cache.hash.add(options.config.shared_libcpp);
+        cache.hash.add(options.config.build_shared_libcpp);
         cache.hash.add(options.config.link_libunwind);
         cache.hash.add(output_mode);
         cache_helpers.addDebugFormat(&cache.hash, options.config.debug_format);
@@ -2525,7 +2527,7 @@ pub fn create(gpa: Allocator, arena: Allocator, io: Io, diag: *CreateDiagnostic,
             if (comp.wantBuildLibUnwindFromSource()) {
                 comp.queued_jobs.libunwind = true;
             }
-            if (build_options.have_llvm and is_exe_or_dyn_lib and comp.config.link_libcpp) {
+            if (build_options.have_llvm and is_exe_or_dyn_lib and comp.config.link_libcpp and !comp.config.shared_libcpp) {
                 comp.queued_jobs.libcxx = true;
                 comp.queued_jobs.libcxxabi = true;
             }
@@ -4984,6 +4986,8 @@ pub fn obtainCObjectCacheManifest(
     cache_helpers.addModule(&man.hash, owner_mod);
     man.hash.addListOfBytes(comp.global_cc_argv);
     man.hash.add(comp.config.link_libcpp);
+    man.hash.add(comp.config.shared_libcpp);
+    man.hash.add(comp.config.build_shared_libcpp);
 
     // When libc_installation is null it means that Zig generated this dir list
     // based on the zig library directory alone. The zig lib directory file
@@ -7241,7 +7245,10 @@ fn wantBuildLibUnwindFromSource(comp: *Compilation) bool {
         .Exe => true,
     };
     const ofmt = comp.root_mod.resolved_target.result.ofmt;
-    return is_exe_or_dyn_lib and comp.config.link_libunwind and ofmt != .c;
+    // A shared C++ runtime owns the unwinder too. Linking another hidden copy
+    // into each consumer would recreate the runtime split across DSOs.
+    return is_exe_or_dyn_lib and comp.config.link_libunwind and ofmt != .c and
+        !(comp.config.link_libcpp and comp.config.shared_libcpp);
 }
 
 pub fn setAllocFailure(comp: *Compilation) void {

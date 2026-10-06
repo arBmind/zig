@@ -1260,6 +1260,8 @@ pub const ClangCliParam = struct {
         no_asynchronous_unwind_tables,
         nostdlib,
         nostdlib_cpp,
+        shared_libcpp,
+        static_libcpp,
         shared,
         rdynamic,
         wl,

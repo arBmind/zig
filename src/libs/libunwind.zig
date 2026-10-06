@@ -107,7 +107,8 @@ pub fn buildStaticLib(comp: *Compilation, prog_node: std.Progress.Node) BuildErr
         try cflags.append("-w"); // Disable all warnings.
         try cflags.append("-I");
         try cflags.append(try comp.dirs.zig_lib.join(arena, &.{ "libunwind", "include" }));
-        try cflags.append("-D_LIBUNWIND_HIDE_SYMBOLS");
+        if (!comp.config.build_shared_libcpp)
+            try cflags.append("-D_LIBUNWIND_HIDE_SYMBOLS");
         try cflags.append("-Wa,--noexecstack");
         try cflags.append("-fvisibility=hidden");
         try cflags.append("-fvisibility-inlines-hidden");
@@ -179,7 +180,7 @@ pub fn buildStaticLib(comp: *Compilation, prog_node: std.Progress.Node) BuildErr
     };
 
     const crt_file = try sub_compilation.toCrtFile();
-    try comp.queuePrelinkTaskMode(crt_file.full_object_path, false, &config);
+    try comp.queuePrelinkTaskMode(crt_file.full_object_path, comp.config.build_shared_libcpp, &config);
     assert(comp.libunwind_static_lib == null);
     comp.libunwind_static_lib = crt_file;
 }

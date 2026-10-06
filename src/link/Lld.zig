@@ -1200,16 +1200,23 @@ fn elfLink(lld: *Lld, arena: Allocator) !void {
                 as_needed = true;
             }
 
+            // LLD receives runtime archives here rather than through prelink tasks.
+            // A runtime DSO must export all APIs, including ones with no references
+            // in the (otherwise empty) root compilation.
+            if (comp.config.build_shared_libcpp) try argv.append("--whole-archive");
+
             // libc++ dep
-            if (comp.config.link_libcpp) {
+            if (comp.config.link_libcpp and !comp.config.shared_libcpp) {
                 try argv.append(try comp.libcxxabi_static_lib.?.full_object_path.toString(arena));
                 try argv.append(try comp.libcxx_static_lib.?.full_object_path.toString(arena));
             }
 
-            // libunwind dep
-            if (comp.config.link_libunwind) {
+            // libunwind dep (owned by the shared C++ runtime in shared mode)
+            if (comp.config.link_libunwind and !(comp.config.link_libcpp and comp.config.shared_libcpp)) {
                 try argv.append(try comp.libunwind_static_lib.?.full_object_path.toString(arena));
             }
+
+            if (comp.config.build_shared_libcpp) try argv.append("--no-whole-archive");
 
             // libc dep
             diags.flags.missing_libc = false;

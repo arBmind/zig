@@ -3361,7 +3361,7 @@
 .{ .name = "static-libgcc" },
 .{ .name = "static-libgfortran" },
 .{ .name = "static-libsan" },
-.{ .name = "static-libstdc++" },
+.{ .name = "static-libstdc++", .ze = .static_libcpp },
 .{ .name = "static-openmp" },
 .{ .name = "static-pie" },
 .{ .name = "stats-file-append" },
@@ -5138,4 +5138,7 @@
     .syntax = .joined_or_separate,
 },
 .{ .name = "y", .syntax = .joined },
+.{ .name = "shared-libstdc++", .ze = .shared_libcpp },
+.{ .name = "fshared-libcpp", .ze = .shared_libcpp },
+.{ .name = "fno-shared-libcpp", .ze = .static_libcpp },
 }
